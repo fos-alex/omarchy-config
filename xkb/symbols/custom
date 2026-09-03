@@ -1,0 +1,22 @@
+// Custom key remaps, activated via xkb options (see rules/evdev).
+
+// custom:tilde — make the ISO extra key (<LSGT>, the key between the left
+// Shift and Z) always produce "~", with or without Shift held.
+partial alphanumeric_keys
+xkb_symbols "tilde" {
+    key <LSGT> {
+        type = "TWO_LEVEL",
+        [ asciitilde, asciitilde ]
+    };
+};
+
+// custom:deadacute — make the ' key a dead key (macOS international style):
+// ' + a = á, ' + e = é ... ; ' + space (or ') = a literal '; Shift+' = dead
+// diaeresis: " + u = ü.
+partial alphanumeric_keys
+xkb_symbols "deadacute" {
+    key <AC11> {
+        type = "TWO_LEVEL",
+        [ dead_acute, dead_diaeresis ]
+    };
+};

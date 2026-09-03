@@ -3,8 +3,13 @@
 
 -- Keyboard layout and options.
 -- See https://wiki.hypr.land/Configuring/Basics/Variables/#input
--- hl.config({
---   input = {
+hl.config({
+   input = {
+     -- Custom options are defined in ~/.config/xkb/rules/evdev.
+     -- custom:tilde makes the ISO key between Shift and Z always produce "~".
+     -- custom:deadacute makes the ' key a macOS-style dead accent key.
+     kb_options = "compose:caps,shift:both_capslock_cancel,custom:tilde,custom:deadacute",
+--
 --     -- Use multiple keyboard layouts and switch between them with Left Alt + Right Alt.
 --     kb_layout = "us,dk,eu",
 --     kb_options = "compose:caps,shift:both_capslock_cancel,grp:alts_toggle",
@@ -25,7 +30,9 @@
 --     -- Turn off mouse acceleration (default: adaptive).
 --     accel_profile = "flat",
 --
---     touchpad = {
+     touchpad = {
+       -- Only click on a physical press, never on a light tap.
+       tap_to_click = false,
 --       -- Use natural (inverse) scrolling.
 --       natural_scroll = true,
 --
@@ -36,13 +43,13 @@
 --       scroll_factor = 0.4,
 --
 --       -- Enable the touchpad while typing.
---       disable_while_typing = false,
+       disable_while_typing = true,
 --
 --       -- Left-click-and-drag with three fingers.
 --       drag_3fg = 1,
---     },
---   },
--- })
+     },
+   },
+})
 
 -- App-specific touchpad scroll speeds.
 -- o.window("(Alacritty|kitty|foot)", { scroll_touchpad = 1.5 })
@@ -50,7 +57,14 @@
 
 -- Enable touchpad gestures for changing workspaces.
 -- See https://wiki.hypr.land/Configuring/Advanced-and-Cool/Gestures/
--- hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })
+hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })
+
+-- Reverse the 3-finger horizontal workspace swipe direction (default is inverted).
+hl.config({
+   gestures = {
+      workspace_swipe_invert = false,
+   },
+})
 
 -- Enable touchpad gestures for moving focus (helpful on scrolling layout).
 -- hl.gesture({ fingers = 3, direction = "left", action = function() hl.dispatch(hl.dsp.focus({ direction = "l" })) end })
