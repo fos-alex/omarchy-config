@@ -1,0 +1,7 @@
+// Mandatory: include the system ruleset to *extend* it
+! include %S/evdev
+
+// Custom options.
+! option     = symbols
+  custom:tilde = +custom(tilde)
+  custom:deadacute = +custom(deadacute)

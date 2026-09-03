@@ -31,3 +31,26 @@ cp -p omarchy-config/local/bin/* ~/.local/bin/
 cp -p omarchy-config/systemd/user/* ~/.config/systemd/user/
 systemctl --user daemon-reload
 ```
+
+## Extras
+
+### OpenCode usage in the Omarchy agents panel
+
+`local/bin/omarchy-agent-usage-opencode` is a collector for Omarchy's
+`omarchy.agents` bar panel. It reports the OpenCode Go subscription limits
+(5h / weekly / monthly) from `https://opencode.ai/zen/go/v1/usage` plus local
+token stats from opencode's database, as a tab next to Claude/Codex/Fireworks.
+
+`systemd/user/omarchy-agent-usage-opencode.{service,timer}` runs it every
+5 minutes and writes the record the panel watches
+(`~/.local/state/omarchy/agents/usage/opencode.json`):
+
+```bash
+systemctl --user enable --now omarchy-agent-usage-opencode.timer
+```
+
+Requires opencode to be connected to OpenCode Go (`/connect` in opencode).
+
+### Voxtype
+
+`systemd/user/voxtype.service` runs the push-to-talk dictation daemon.

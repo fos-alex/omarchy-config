@@ -1,0 +1,241 @@
+#!/usr/bin/python3
+"""Collect the OpenCode (Go) subscription usage into one display-ready JSON record.
+
+Limits come from the OpenCode Go usage endpoint (Bearer key from opencode's
+auth.json); local token stats come from the opencode database, filtered to the
+opencode-go provider. Prints the record to stdout; the caller writes it to
+~/.local/state/omarchy/agents/usage/opencode.json for the omarchy agents panel.
+"""
+
+import json
+import os
+import sqlite3
+import sys
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+AGENT_ID = "opencode"
+AGENT_NAME = "OpenCode"
+TIER_LABEL = "Go"
+USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+# Cloudflare (error 1010) blocks generic bot user agents such as
+# Python-urllib; the Go API expects clients to identify themselves.
+USER_AGENT = "omarchy-agent-usage-opencode/1.0"
+AUTH_HELP = "Run /connect in opencode and select OpenCode Go."
+CONNECT_HELP = "Check your connection; usage refreshes on the next cycle."
+
+LIMIT_LABELS = (
+    ("rolling", "5h window"),
+    ("weekly", "Weekly (7-day)"),
+    ("monthly", "Monthly"),
+)
+
+
+def data_home():
+    return Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+
+
+def auth_key():
+    path = data_home() / "opencode" / "auth.json"
+    try:
+        auth = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    for entry in (auth.get("opencode-go"), auth.get("opencode")):
+        if isinstance(entry, dict):
+            key = entry.get("key") or entry.get("apiKey")
+            if key:
+                return str(key)
+    return None
+
+
+def fetch_limits(key):
+    request = urllib.request.Request(
+        USAGE_URL,
+        headers={"Accept": "application/json", "Authorization": "Bearer " + key, "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    limits = []
+    for name, label in LIMIT_LABELS:
+        window = usage.get(name)
+        if not isinstance(window, dict):
+            continue
+        try:
+            percent = float(window.get("percent")) / 100.0
+        except (TypeError, ValueError):
+            continue
+        limits.append({
+            "label": label,
+            "percent": max(0.0, min(1.0, percent)),
+            "resetsAt": str(window.get("resetsAt") or ""),
+        })
+    return limits or None
+
+
+def local_day(value):
+    if value is None:
+        return datetime.now().strftime("%Y-%m-%d")
+    if isinstance(value, (int, float)):
+        if value > 10_000_000_000:
+            value = value / 1000
+        return datetime.fromtimestamp(value).strftime("%Y-%m-%d")
+    text = str(value)
+    try:
+        if text.endswith("Z"):
+            dt = datetime.fromisoformat(text[:-1] + "+00:00")
+        else:
+            dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
+def number(value):
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def scan_local_stats():
+    """Token usage recorded by opencode for the opencode-go provider."""
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    recent_dates = [(now - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1)]
+    recent = {day: {"date": day, "messageCount": 0} for day in recent_dates}
+    stats = {
+        "todayPrompts": 0,
+        "todaySessions": 0,
+        "todayTotalTokens": 0,
+        "todayTokensByModel": {},
+        "recentDays": [],
+        "totalPrompts": 0,
+        "totalSessions": 0,
+        "activeDays": 0,
+        "activeDates": [],
+        "modelUsage": {},
+    }
+
+    db = data_home() / "opencode" / "opencode.db"
+    if not db.is_file():
+        return stats
+
+    today_sessions = set()
+    total_sessions = set()
+    active_days = set()
+    today_tokens_by_model = {}
+    model_usage = {}
+
+    try:
+        conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return stats
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        # The LIKE gates skip rows whose JSON cannot name the provider, and
+        # json_valid guards the parse: json_extract() raises on malformed JSON
+        # and one such row would abort the whole scan.
+        for session_id, raw in conn.execute(
+            "SELECT session_id, data FROM message"
+            " WHERE data LIKE '%\"providerID\"%:%\"opencode-go\"%'"
+            " AND CASE WHEN json_valid(data) THEN json_extract(data, '$.role') END = 'assistant'"
+            " AND CASE WHEN json_valid(data) THEN json_extract(data, '$.providerID') END = 'opencode-go'"
+        ):
+            try:
+                entry = json.loads(raw)
+                if not isinstance(entry, dict) or entry.get("role") != "assistant":
+                    continue
+                if str(entry.get("providerID") or "") != "opencode-go":
+                    continue
+                tokens = entry.get("tokens") or {}
+                cache = tokens.get("cache") or {}
+                input_tokens = number(tokens.get("input"))
+                output_tokens = number(tokens.get("output")) + number(tokens.get("reasoning"))
+                cache_read = number(cache.get("read"))
+                cache_write = number(cache.get("write"))
+                if not (input_tokens or output_tokens or cache_read or cache_write):
+                    continue
+                day = local_day((entry.get("time") or {}).get("created"))
+                model = str(entry.get("modelID") or "opencode").rstrip("/").split("/")[-1] or "opencode"
+            except Exception:
+                continue
+
+            total = input_tokens + output_tokens + cache_read + cache_write
+            stats["totalPrompts"] += 1
+            total_sessions.add(str(session_id))
+            active_days.add(day)
+
+            bucket = model_usage.setdefault(model, {
+                "inputTokens": 0,
+                "outputTokens": 0,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0,
+            })
+            bucket["inputTokens"] += input_tokens
+            bucket["outputTokens"] += output_tokens
+            bucket["cacheReadInputTokens"] += cache_read
+            bucket["cacheCreationInputTokens"] += cache_write
+
+            if day in recent:
+                recent[day]["messageCount"] += total
+
+            if day == today:
+                stats["todayPrompts"] += 1
+                today_sessions.add(str(session_id))
+                stats["todayTotalTokens"] += total
+                today_tokens_by_model[model] = today_tokens_by_model.get(model, 0) + total
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+
+    stats["todaySessions"] = len(today_sessions)
+    stats["todayTokensByModel"] = today_tokens_by_model
+    stats["recentDays"] = [recent[day] for day in recent_dates]
+    stats["totalSessions"] = len(total_sessions)
+    stats["activeDays"] = len(active_days)
+    stats["activeDates"] = sorted(active_days)
+    stats["modelUsage"] = model_usage
+    return stats
+
+
+def main():
+    record = {
+        "schemaVersion": 1,
+        "id": AGENT_ID,
+        "name": AGENT_NAME,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "ready": True,
+        "hasLocalStats": True,
+        "tierLabel": TIER_LABEL,
+    }
+    record.update(scan_local_stats())
+
+    key = auth_key()
+    if not key:
+        record["limits"] = []
+        record["usageStatusText"] = "OpenCode Go not connected"
+        record["authHelpText"] = AUTH_HELP
+    else:
+        limits = fetch_limits(key)
+        if limits is None:
+            record["usageStatusText"] = "Usage unavailable"
+            record["authHelpText"] = CONNECT_HELP
+        else:
+            record["limits"] = limits
+
+    print(json.dumps(record, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

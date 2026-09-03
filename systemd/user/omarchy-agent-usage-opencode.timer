@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the OpenCode agent usage record every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=15
+
+[Install]
+WantedBy=timers.target
